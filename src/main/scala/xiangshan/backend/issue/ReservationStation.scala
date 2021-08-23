@@ -424,14 +424,19 @@ class ReservationStation(params: RSParams)(implicit p: Parameters) extends XSMod
   }
   val fastWakeupMatchRegVec = RegNext(fastWakeupMatchVec)
 
+  val pingpong = RegInit(1.U(2.W))
+  pingpong := Cat(pingpong(0), pingpong(1))
+  require(params.numDeq <= 2)
+  io.deq := DontCare
   for (i <- 0 until params.numDeq) {
     /**
       * S2: to function units
       */
     // payload: send to function units
     // TODO: these should be done outside RS
-    PipelineConnect(s1_out(i), io.deq(i), io.deq(i).ready || io.deq(i).bits.uop.roqIdx.needFlush(io.redirect, io.flush), false.B)
-    val pipeline_fire = s1_out(i).valid && io.deq(i).ready
+    val deq = if (params.numDeq > 1) io.deq(pingpong(i)) else io.deq.head
+    PipelineConnect(s1_out(i), deq, deq.ready || deq.bits.uop.roqIdx.needFlush(io.redirect, io.flush), false.B)
+    val pipeline_fire = s1_out(i).valid && deq.ready
     if (params.hasFeedback) {
       io.feedback.get(i).rsIdx := RegEnable(OHToUInt(select.io.grant(i).bits), pipeline_fire)
       io.feedback.get(i).isFirstIssue := RegEnable(statusArray.io.isFirstIssue(i), pipeline_fire)
@@ -447,13 +452,13 @@ class ReservationStation(params: RSParams)(implicit p: Parameters) extends XSMod
       }
 
       val bypassNetwork = Module(new BypassNetwork(params.numSrc, params.numFastWakeup, params.dataBits, params.optBuf))
-      bypassNetwork.io.hold := !io.deq(i).ready
+      bypassNetwork.io.hold := !deq.ready
       bypassNetwork.io.source := s1_out(i).bits.src.take(params.numSrc)
       bypassNetwork.io.bypass.zip(wakeupBypassMask.zip(io.fastDatas)).foreach { case (by, (m, d)) =>
         by.valid := m
         by.data := d
       }
-      bypassNetwork.io.target <> io.deq(i).bits.src.take(params.numSrc)
+      bypassNetwork.io.target <> deq.bits.src.take(params.numSrc)
     }
 
     if (io.store.isDefined) {
